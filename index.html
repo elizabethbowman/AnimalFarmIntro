@@ -474,6 +474,7 @@
     .name-row { grid-template-columns: 1fr; }
   }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
 <div class="wrapper">
@@ -574,8 +575,11 @@
         <div id="submitError" style="color:var(--barn-red);font-size:13px;margin-top:-6px;margin-bottom:10px;display:none;">Please enter your full name and period before submitting.</div>
         <div class="submit-success" id="submitSuccess">
           <h4>✅ Submitted!</h4>
-          <p>Your activity has been recorded. Your teacher will review it shortly.</p>
+          <p>Your activity has been recorded. Download your PDF below and upload it to Canvas to turn it in.</p>
           <div class="submit-receipt" id="submitReceipt"></div>
+          <button class="download-btn" id="downloadBtn" onclick="downloadPDF()" style="margin-top:14px; background:white; color:#3A6B35; border:2px solid white; border-radius:6px; padding:10px 22px; font-family:'Playfair Display',serif; font-size:15px; font-weight:700; cursor:pointer; transition: opacity 0.2s;">
+            ⬇ Download PDF for Submission
+          </button>
         </div>
       </div>
     </div>
@@ -747,51 +751,223 @@
     }
   }
 
+  var submissionData = null;
+
   function handleSubmit() {
     var name = document.getElementById('studentName').value.trim();
     var period = document.getElementById('studentPeriod').value.trim();
     var errEl = document.getElementById('submitError');
-    if (!name || !period) {
-      errEl.style.display = 'block';
-      return;
-    }
+    if (!name || !period) { errEl.style.display = 'block'; return; }
     errEl.style.display = 'none';
 
-    // Collect anticipation response
-    var anticipationSummary = 'Not completed';
+    // Collect quiz results
+    var quizResults = [];
+    animals.forEach(function(animal, i) {
+      var row = document.getElementById('animal-' + i);
+      var correct = row.classList.contains('answered-correct');
+      var allBtns = document.querySelectorAll('#choices-' + i + ' .choice-btn');
+      var studentAnswer = animal.choices[animal.correct];
+      allBtns.forEach(function(b) {
+        if (b.classList.contains('wrong')) studentAnswer = b.textContent.trim();
+      });
+      quizResults.push({ name: animal.name, correct: correct, correctAnswer: animal.choices[animal.correct], studentAnswer: studentAnswer });
+    });
+
+    // Collect anticipation
+    var anticipationStatement = '', anticipationStance = '', anticipationResponse = '';
     for (var i = 0; i < statements.length; i++) {
-      var agreeSelected = document.getElementById('agree-' + i) && document.getElementById('agree-' + i).classList.contains('selected');
-      var disagreeSelected = document.getElementById('disagree-' + i) && document.getElementById('disagree-' + i).classList.contains('selected');
-      var responseEl = document.getElementById('response-' + i);
-      if ((agreeSelected || disagreeSelected) && responseEl && responseEl.value.trim().length > 0) {
-        var stance = agreeSelected ? 'Agreed' : 'Disagreed';
-        anticipationSummary = 'Statement ' + (i + 1) + ' — ' + stance + ': "' + responseEl.value.trim() + '"';
-        break;
-      }
+      var ag = document.getElementById('agree-' + i);
+      var dg = document.getElementById('disagree-' + i);
+      var re = document.getElementById('response-' + i);
+      if (ag && ag.classList.contains('selected')) { anticipationStatement = statements[i].text; anticipationStance = 'AGREE'; anticipationResponse = re ? re.value.trim() : ''; break; }
+      if (dg && dg.classList.contains('selected')) { anticipationStatement = statements[i].text; anticipationStance = 'DISAGREE'; anticipationResponse = re ? re.value.trim() : ''; break; }
     }
 
-    var timestamp = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
-    var pct = Math.round((quizCorrect / animals.length) * 100);
+    var timestamp = new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' });
+    var scorePct = Math.round((quizCorrect / animals.length) * 100);
 
-    // Build receipt
-    var receipt =
-      '👤 Name: ' + name + '\n' +
-      '📅 Period: ' + period + '\n' +
-      '🕐 Submitted: ' + timestamp + '\n' +
-      '🐾 Quiz Score: ' + quizCorrect + ' / ' + animals.length + ' (' + pct + '%)\n' +
-      '✍️ Anticipation: ' + anticipationSummary;
+    submissionData = { name: name, period: period, timestamp: timestamp, quizResults: quizResults, quizCorrect: quizCorrect, quizTotal: animals.length, scorePct: scorePct, anticipationStatement: anticipationStatement, anticipationStance: anticipationStance, anticipationResponse: anticipationResponse };
 
     document.getElementById('submitReceipt').style.whiteSpace = 'pre-line';
-    document.getElementById('submitReceipt').textContent = receipt;
+    document.getElementById('submitReceipt').textContent =
+      'Student: ' + name + '\nPeriod: ' + period + '\nSubmitted: ' + timestamp +
+      '\nQuiz Score: ' + quizCorrect + ' / ' + animals.length + ' (' + scorePct + '%)' +
+      '\nAnticipation (' + anticipationStance + '): "' + anticipationStatement + '"' +
+      '\nResponse: ' + anticipationResponse;
 
-    // Disable form
     document.getElementById('studentName').disabled = true;
     document.getElementById('studentPeriod').disabled = true;
     document.getElementById('submitBtn').disabled = true;
     document.getElementById('submitBtn').textContent = 'Submitted ✓';
-
     document.getElementById('submitSuccess').classList.add('visible');
-    document.getElementById('submitSuccess').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    setTimeout(function() { document.getElementById('submitSuccess').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 100);
+  }
+
+  function downloadPDF() {
+    if (!submissionData) return;
+    var d = submissionData;
+    var btn = document.getElementById('downloadBtn');
+    btn.textContent = '⏳ Generating PDF...';
+    btn.disabled = true;
+
+    setTimeout(function() {
+      try {
+        var jsPDF = window.jspdf.jsPDF;
+        var doc = new jsPDF({ unit: 'pt', format: 'letter' });
+        var pageW = doc.internal.pageSize.getWidth();
+        var pageH = doc.internal.pageSize.getHeight();
+        var margin = 50;
+        var contentW = pageW - margin * 2;
+        var y = margin;
+
+        function newPageIfNeeded(need) {
+          if (y + need > pageH - 50) { doc.addPage(); y = margin; drawBorder(); }
+        }
+        function drawBorder() {
+          doc.setDrawColor(139, 26, 26); doc.setLineWidth(2);
+          doc.rect(20, 20, pageW - 40, pageH - 40);
+        }
+        function sectionBar(label) {
+          newPageIfNeeded(32);
+          doc.setFillColor(139, 26, 26);
+          doc.roundedRect(margin, y, contentW, 22, 2, 2, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(255, 255, 255);
+          doc.text(label.toUpperCase(), margin + 10, y + 15);
+          doc.setTextColor(28, 16, 8); y += 30;
+        }
+
+        drawBorder();
+
+        // ── Header banner ──
+        doc.setFillColor(139, 26, 26);
+        doc.roundedRect(margin, y, contentW, 58, 4, 4, 'F');
+        doc.setFont('helvetica', 'bolditalic'); doc.setFontSize(11); doc.setTextColor(212, 160, 23);
+        doc.text('Animal Farm', pageW / 2, y + 20, { align: 'center' });
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(18);
+        doc.text('Introduction to Allegory', pageW / 2, y + 42, { align: 'center' });
+        doc.setTextColor(28, 16, 8); y += 68;
+
+        // ── Student info box ──
+        doc.setFillColor(245, 237, 216); doc.setDrawColor(212, 160, 23); doc.setLineWidth(1.5);
+        doc.roundedRect(margin, y, contentW, 44, 3, 3, 'FD');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(107, 76, 42);
+        doc.text('Name:', margin + 12, y + 16);
+        doc.setFont('helvetica', 'normal'); doc.setTextColor(28, 16, 8);
+        doc.text(d.name, margin + 52, y + 16);
+        doc.setFont('helvetica', 'bold'); doc.setTextColor(107, 76, 42);
+        doc.text('Period:', margin + 12, y + 33);
+        doc.setFont('helvetica', 'normal'); doc.setTextColor(28, 16, 8);
+        doc.text(d.period, margin + 57, y + 33);
+        doc.setFont('helvetica', 'bold'); doc.setTextColor(107, 76, 42);
+        doc.text('Submitted:', pageW / 2, y + 16);
+        doc.setFont('helvetica', 'normal'); doc.setTextColor(28, 16, 8);
+        doc.text(d.timestamp, pageW / 2 + 60, y + 16);
+        // Score badge
+        var sc = d.scorePct >= 80 ? [58,107,53] : (d.scorePct >= 60 ? [180,120,20] : [139,26,26]);
+        doc.setFillColor(sc[0], sc[1], sc[2]);
+        doc.roundedRect(pageW - margin - 88, y + 9, 86, 26, 3, 3, 'F');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(255,255,255);
+        doc.text(d.quizCorrect + '/' + d.quizTotal + '  ' + d.scorePct + '%', pageW - margin - 45, y + 26, { align: 'center' });
+        doc.setTextColor(28, 16, 8); y += 56;
+
+        // ── Section 1: Vocabulary ──
+        sectionBar('Section 1 — Key Terms');
+        var vocabDefs = [
+          ['Fable', 'A short story with animal characters that teaches a moral lesson (e.g., Aesop\'s fables).'],
+          ['Satire', 'Using humor or exaggeration to expose a real-world flaw, hoping society will change.'],
+          ['Allegory', 'A story where characters and events symbolically represent deeper real-world ideas.']
+        ];
+        vocabDefs.forEach(function(v) {
+          newPageIfNeeded(34);
+          doc.setFillColor(245, 237, 216);
+          doc.roundedRect(margin, y, contentW, 28, 2, 2, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(139, 26, 26);
+          doc.text(v[0], margin + 10, y + 18);
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(28, 16, 8);
+          var dl = doc.splitTextToSize(v[1], contentW - 85);
+          doc.text(dl[0], margin + 78, y + 13);
+          if (dl[1]) doc.text(dl[1], margin + 78, y + 23);
+          y += 34;
+        });
+        y += 8;
+
+        // ── Section 2: Quiz ──
+        sectionBar('Section 2 — Animal Symbolism Quiz  (' + d.quizCorrect + '/' + d.quizTotal + ' correct, ' + d.scorePct + '%)');
+        var colW = (contentW - 8) / 2;
+        var col = 0;
+        d.quizResults.forEach(function(r) {
+          newPageIfNeeded(32);
+          var xPos = col === 0 ? margin : margin + colW + 8;
+          var bg = r.correct ? [232,245,233] : [255,235,238];
+          var bd = r.correct ? [58,107,53] : [139,26,26];
+          doc.setFillColor(bg[0], bg[1], bg[2]);
+          doc.setDrawColor(bd[0], bd[1], bd[2]);
+          doc.setLineWidth(0.8);
+          doc.roundedRect(xPos, y, colW, 28, 2, 2, 'FD');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(bd[0], bd[1], bd[2]);
+          doc.text(r.correct ? '\u2713' : '\u2717', xPos + 8, y + 18);
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(28, 16, 8);
+          doc.text(r.name, xPos + 22, y + 12);
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(70, 70, 70);
+          var aText = r.correct ? r.correctAnswer : (r.studentAnswer + ' \u2192 ' + r.correctAnswer);
+          var aLines = doc.splitTextToSize(aText, colW - 26);
+          doc.text(aLines[0], xPos + 22, y + 23);
+          col++;
+          if (col === 2) { col = 0; y += 32; }
+        });
+        if (col === 1) y += 32;
+        y += 10;
+
+        // ── Section 3: Anticipation ──
+        newPageIfNeeded(140);
+        sectionBar('Section 3 — Anticipation');
+
+        // Statement box
+        doc.setFillColor(245, 237, 216); doc.setDrawColor(212, 160, 23); doc.setLineWidth(1);
+        var stmtLines = doc.splitTextToSize('"' + d.anticipationStatement + '"', contentW - 20);
+        var stmtH = stmtLines.length * 14 + 18;
+        doc.roundedRect(margin, y, contentW, stmtH, 3, 3, 'FD');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(107, 76, 42);
+        doc.text('STATEMENT:', margin + 10, y + 12);
+        doc.setFont('helvetica', 'italic'); doc.setFontSize(11); doc.setTextColor(28, 16, 8);
+        stmtLines.forEach(function(line, li) { doc.text(line, margin + 10, y + 24 + li * 14); });
+        y += stmtH + 8;
+
+        // Stance badge
+        var stBg = d.anticipationStance === 'AGREE' ? [58,107,53] : [139,26,26];
+        doc.setFillColor(stBg[0], stBg[1], stBg[2]);
+        doc.roundedRect(margin, y, 76, 20, 3, 3, 'F');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(255,255,255);
+        doc.text(d.anticipationStance, margin + 38, y + 14, { align: 'center' });
+        doc.setTextColor(28, 16, 8); y += 28;
+
+        // Response box
+        var rLines = doc.splitTextToSize(d.anticipationResponse || '(No response written)', contentW - 24);
+        var rH = Math.max(50, rLines.length * 14 + 20);
+        newPageIfNeeded(rH + 8);
+        doc.setFillColor(255,255,255); doc.setDrawColor(200,184,154); doc.setLineWidth(1.2);
+        doc.roundedRect(margin, y, contentW, rH, 3, 3, 'FD');
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(28, 16, 8);
+        rLines.forEach(function(line, li) { doc.text(line, margin + 12, y + 16 + li * 14); });
+        y += rH + 16;
+
+        // ── Footer ──
+        newPageIfNeeded(24);
+        doc.setDrawColor(212, 160, 23); doc.setLineWidth(1);
+        doc.line(margin, y, margin + contentW, y); y += 10;
+        doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(150,130,100);
+        doc.text('Animal Farm — Introduction to Allegory  |  ' + d.name + '  |  Period ' + d.period + '  |  ' + d.timestamp, pageW / 2, y, { align: 'center' });
+
+        var filename = 'AnimalFarm_Allegory_' + d.name.replace(/\s+/g, '_') + '_Per' + d.period + '.pdf';
+        doc.save(filename);
+        btn.textContent = '✅ PDF Downloaded!';
+        btn.style.background = 'rgba(255,255,255,0.2)';
+      } catch(e) {
+        console.error(e);
+        btn.textContent = '⚠ Error — try again';
+        btn.disabled = false;
+      }
+    }, 120);
   }
 
   buildQuiz();
